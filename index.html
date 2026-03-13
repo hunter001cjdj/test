@@ -12,7 +12,7 @@
       <p class="eyebrow">Online Room Battle</p>
       <h1>ARENA DUEL ONLINE</h1>
       <p class="subtitle">
-        建立房間或加入房間後，和朋友在同一張地圖裡對戰。5 分鐘內擊殺數最高的玩家獲勝。
+        建立房間或加入房間後，和朋友在同一張地圖裡對戰。這個版本改成可部署在 Vercel 的即時連線架構，5 分鐘內擊殺數最高的玩家獲勝。
       </p>
     </section>
 
@@ -84,7 +84,7 @@
           <p class="overlay-tag" id="overlayTag">Lobby</p>
           <h2 id="overlayTitle">建立房間後開始多人對戰</h2>
           <p id="overlayText">
-            房主建立房間後分享房號，另一位玩家加入後就能開始對戰。
+            房主建立房間後分享房號，另一位玩家加入後就能開始對戰。Vercel 版使用 Ably Realtime 進行同步。
           </p>
         </div>
       </div>
@@ -95,6 +95,7 @@
     </section>
   </main>
 
+  <script src="https://cdn.ably.com/lib/ably.min-2.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

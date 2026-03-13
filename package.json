@@ -1,13 +1,15 @@
 {
-  "name": "arena-duel-online",
+  "name": "arena-duel-online-vercel",
   "version": "1.0.0",
   "private": true,
-  "description": "Multiplayer room-based browser shooter with a Node.js WebSocket server.",
-  "main": "server.js",
+  "description": "Vercel-compatible multiplayer browser shooter using Ably Realtime.",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "start": "node server.js"
+    "dev": "vercel dev"
   },
   "dependencies": {
-    "ws": "^8.18.1"
+    "ably": "^2.8.0"
   }
 }

@@ -20,25 +20,19 @@ const overlayTag = document.getElementById("overlayTag");
 const overlayTitle = document.getElementById("overlayTitle");
 const overlayText = document.getElementById("overlayText");
 
-const socketUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
-const socket = new WebSocket(socketUrl);
-
 const ARENA = {
   width: canvas.width,
   height: canvas.height,
   obstacle: { x: 390, y: 200, width: 180, height: 140 },
 };
 
-const state = {
-  connected: false,
-  clientId: null,
-  roomCode: "",
-  room: null,
-  game: null,
-  particles: [],
-};
+const ROUND_DURATION_MS = 5 * 60 * 1000;
+const RESPAWN_DELAY_MS = 1200;
+const SNAPSHOT_INTERVAL_MS = 66;
+const ROOM_PREFIX = "room:";
 
-const inputState = {
+const pointer = { x: ARENA.width / 2, y: ARENA.height / 2 };
+const localInput = {
   up: false,
   down: false,
   left: false,
@@ -48,12 +42,33 @@ const inputState = {
   aimY: ARENA.height / 2,
 };
 
-function send(type, payload = {}) {
-  if (socket.readyState !== 1) {
-    return;
+const state = {
+  clientId: getStoredPlayerId(),
+  playerName: "",
+  roomCode: "",
+  isHost: false,
+  roomJoined: false,
+  ably: null,
+  channel: null,
+  presenceMembers: [],
+  hostInputs: {},
+  hostGame: null,
+  renderGame: null,
+  matchState: "lobby",
+  lastFrameAt: performance.now(),
+  lastSnapshotAt: 0,
+  particles: [],
+};
+
+function getStoredPlayerId() {
+  const existing = sessionStorage.getItem("arena-player-id");
+  if (existing) {
+    return existing;
   }
 
-  socket.send(JSON.stringify({ type, payload }));
+  const nextId = `player-${Math.random().toString(36).slice(2, 10)}`;
+  sessionStorage.setItem("arena-player-id", nextId);
+  return nextId;
 }
 
 function setStatus(text) {
@@ -72,124 +87,650 @@ function hideOverlay() {
 }
 
 function getPlayerName() {
-  const name = playerNameInput.value.trim();
-  return name || `Player-${Math.floor(100 + Math.random() * 900)}`;
+  const value = playerNameInput.value.trim();
+  return value || `Player-${Math.floor(100 + Math.random() * 900)}`;
 }
 
-function createPlayerCard(player, isLocal) {
-  const div = document.createElement("div");
-  div.className = "player-chip";
+function generateRoomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let roomCode = "";
 
-  const left = document.createElement("div");
-  const name = document.createElement("strong");
-  name.textContent = `${player.name}${isLocal ? " (你)" : ""}`;
-  const meta = document.createElement("span");
-  meta.textContent = `${player.isHost ? "房主" : "玩家"} | Kills ${player.score} | HP ${Math.max(0, Math.ceil(player.health))}`;
-  left.append(name, meta);
-
-  const right = document.createElement("span");
-  right.textContent = player.alive ? "在線" : "重生中";
-  div.append(left, right);
-  return div;
-}
-
-function renderRoomInfo() {
-  roomCodeText.textContent = state.roomCode || "未加入";
-
-  if (!state.room || !state.room.players) {
-    playerRoleText.textContent = state.connected ? "已連線" : "未連線";
-    playerList.innerHTML = "";
-    leaveRoomButton.disabled = !state.roomCode;
-    startMatchButton.disabled = true;
-    return;
+  for (let index = 0; index < 6; index += 1) {
+    roomCode += chars[Math.floor(Math.random() * chars.length)];
   }
 
-  const me = state.room.players.find((player) => player.id === state.clientId);
-  playerRoleText.textContent = me ? (me.isHost ? "房主" : "房客") : "觀察中";
-
-  playerList.innerHTML = "";
-  state.room.players.forEach((player) => {
-    playerList.appendChild(createPlayerCard(player, player.id === state.clientId));
-  });
-
-  const canStart = Boolean(me && me.isHost && state.room.players.length === 2 && state.room.matchState !== "running");
-  startMatchButton.disabled = !canStart;
-  leaveRoomButton.disabled = !state.roomCode;
+  return roomCode;
 }
 
 function formatTime(ms) {
-  const seconds = Math.max(0, Math.ceil(ms / 1000));
-  const minutes = Math.floor(seconds / 60);
-  const remain = seconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remain).padStart(2, "0")}`;
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function isInsideObstacle(x, y, padding = 0) {
+  const obstacle = ARENA.obstacle;
+  return (
+    x > obstacle.x - padding &&
+    x < obstacle.x + obstacle.width + padding &&
+    y > obstacle.y - padding &&
+    y < obstacle.y + obstacle.height + padding
+  );
+}
+
+function moveWithCollision(player, nextX, nextY) {
+  const margin = player.radius;
+  const targetX = clamp(nextX, margin, ARENA.width - margin);
+  const targetY = clamp(nextY, margin, ARENA.height - margin);
+
+  if (!isInsideObstacle(targetX, targetY, player.radius)) {
+    player.x = targetX;
+    player.y = targetY;
+    return;
+  }
+
+  if (!isInsideObstacle(targetX, player.y, player.radius)) {
+    player.x = targetX;
+  }
+
+  if (!isInsideObstacle(player.x, targetY, player.radius)) {
+    player.y = targetY;
+  }
+}
+
+function createPlayerEntity(meta, slotIndex) {
+  return {
+    id: meta.clientId,
+    name: meta.name,
+    isHost: Boolean(meta.data?.isHost),
+    x: slotIndex === 0 ? 140 : ARENA.width - 140,
+    y: ARENA.height / 2,
+    angle: slotIndex === 0 ? 0 : Math.PI,
+    radius: 18,
+    speed: 245,
+    bulletSpeed: 520,
+    bulletDamage: 24,
+    fireRate: 0.22,
+    health: 100,
+    score: 0,
+    alive: true,
+    respawnAt: 0,
+    lastShotAt: 0,
+    color: slotIndex === 0 ? "#3dd9b1" : "#ff6b6b",
+  };
+}
+
+function buildRoster() {
+  const unique = new Map();
+  state.presenceMembers.forEach((member) => {
+    unique.set(member.clientId, member);
+  });
+
+  return [...unique.values()].sort((left, right) => {
+    const leftHost = left.data?.isHost ? 0 : 1;
+    const rightHost = right.data?.isHost ? 0 : 1;
+    if (leftHost !== rightHost) {
+      return leftHost - rightHost;
+    }
+    return left.clientId.localeCompare(right.clientId);
+  });
+}
+
+function initializeMatch(startedAt = Date.now()) {
+  const roster = buildRoster();
+  const players = roster.slice(0, 2).map((member, index) => createPlayerEntity(member, index));
+
+  state.hostGame = {
+    running: true,
+    startedAt,
+    timeLeft: ROUND_DURATION_MS,
+    bullets: [],
+    players,
+    statusText: "Battle started. Reach the highest kill count before the timer ends.",
+    resultText: "",
+    resultTag: "",
+  };
+
+  players.forEach((player) => {
+    if (!state.hostInputs[player.id]) {
+      state.hostInputs[player.id] = createEmptyInput();
+    }
+  });
+
+  state.renderGame = serializeGame(state.hostGame);
+  state.matchState = "running";
+  setStatus("對戰開始，5 分鐘倒數啟動。");
+  hideOverlay();
+}
+
+function createEmptyInput() {
+  return {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    shooting: false,
+    aimX: ARENA.width / 2,
+    aimY: ARENA.height / 2,
+  };
+}
+
+function serializeGame(game) {
+  return {
+    timeLeft: game.timeLeft,
+    players: game.players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      isHost: player.isHost,
+      x: player.x,
+      y: player.y,
+      angle: player.angle,
+      radius: player.radius,
+      health: player.health,
+      score: player.score,
+      alive: player.alive,
+      color: player.color,
+    })),
+    bullets: game.bullets.map((bullet) => ({
+      x: bullet.x,
+      y: bullet.y,
+      radius: bullet.radius,
+      color: bullet.color,
+    })),
+    statusText: game.statusText,
+    resultText: game.resultText,
+    resultTag: game.resultTag,
+  };
+}
+
+function resetLobbyView() {
+  state.matchState = "waiting";
+  state.hostGame = null;
+  state.renderGame = null;
+  updateHud();
+
+  if (state.presenceMembers.length < 2) {
+    showOverlay("Waiting", "等待另一位玩家加入", `分享房號 ${state.roomCode}，等朋友進房後就能開始。`);
+  } else if (state.isHost) {
+    showOverlay("Ready", "兩位玩家已到齊", "按下「房主開始對戰」後就會立刻開始 5 分鐘對戰。");
+  } else {
+    showOverlay("Ready", "等待房主開始", "你已經加入房間，等房主按下開始即可進入對戰。");
+  }
 }
 
 function updateHud() {
-  if (!state.game || !state.room) {
+  roomCodeText.textContent = state.roomCode || "未加入";
+  playerRoleText.textContent = !state.roomJoined ? "未連線" : state.isHost ? "房主" : "房客";
+  matchStateEl.textContent = state.matchState === "running" ? "進行中" : state.roomJoined ? "等待開始" : "等待玩家";
+
+  if (!state.renderGame) {
     timerEl.textContent = "05:00";
     localScoreEl.textContent = "0";
     localHealthEl.textContent = "100";
-    matchStateEl.textContent = state.roomCode ? "等待房主開始" : "等待玩家";
-    return;
-  }
-
-  const me = state.game.players.find((player) => player.id === state.clientId);
-  timerEl.textContent = formatTime(state.game.timeLeft);
-  localScoreEl.textContent = me ? String(me.score) : "0";
-  localHealthEl.textContent = me ? String(Math.max(0, Math.ceil(me.health))) : "0";
-  matchStateEl.textContent = state.room.matchState === "running" ? "進行中" : "等待開始";
-}
-
-function handleRoomState(payload) {
-  state.roomCode = payload.roomCode;
-  state.room = payload.room;
-  renderRoomInfo();
-  updateHud();
-}
-
-function handleGameState(payload) {
-  const previous = state.game;
-  state.game = payload;
-
-  if (previous && previous.eventId !== payload.eventId) {
-    const newEvents = payload.events.slice(previous.events.length);
-    newEvents.forEach((event) => {
-      if (event.type === "hit") {
-        burst(event.x, event.y, event.color);
-      }
-      if (event.type === "kill") {
-        setStatus(`${event.attackerName} 擊倒了 ${event.targetName}`);
-      }
-      if (event.type === "round_started") {
-        setStatus("對戰開始，5 分鐘倒數啟動。");
-      }
-      if (event.type === "round_ended") {
-        setStatus(event.message);
-      }
-    });
-  }
-
-  updateHud();
-  renderRoomInfo();
-
-  if (!state.room) {
-    showOverlay("Lobby", "建立房間後開始多人對戰", "房主建立房間後分享房號，另一位玩家加入後就能開始對戰。");
-    return;
-  }
-
-  if (state.room.matchState === "running") {
-    hideOverlay();
-  } else if (state.room.players.length < 2) {
-    showOverlay("Waiting", "等待另一位玩家加入", `分享房號 ${state.roomCode}，兩位玩家到齊後由房主開始遊戲。`);
   } else {
-    showOverlay("Ready", "房主可以開始對戰", "兩位玩家都已進房，按下「房主開始對戰」即可開打。");
+    const me = state.renderGame.players.find((player) => player.id === state.clientId);
+    timerEl.textContent = formatTime(state.renderGame.timeLeft);
+    localScoreEl.textContent = me ? String(me.score) : "0";
+    localHealthEl.textContent = me ? String(Math.max(0, Math.ceil(me.health))) : "0";
+  }
+
+  renderPlayerList();
+  const canStart = state.isHost && state.presenceMembers.length === 2 && state.matchState !== "running";
+  startMatchButton.disabled = !canStart;
+  leaveRoomButton.disabled = !state.roomJoined;
+}
+
+function renderPlayerList() {
+  playerList.innerHTML = "";
+
+  if (!state.presenceMembers.length) {
+    const empty = document.createElement("div");
+    empty.className = "player-chip";
+    empty.textContent = "尚無玩家";
+    playerList.appendChild(empty);
+    return;
+  }
+
+  const playersById = new Map();
+  if (state.renderGame) {
+    state.renderGame.players.forEach((player) => playersById.set(player.id, player));
+  }
+
+  buildRoster().forEach((member) => {
+    const div = document.createElement("div");
+    div.className = "player-chip";
+
+    const left = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = `${member.data?.name || member.clientId}${member.clientId === state.clientId ? " (你)" : ""}`;
+    const meta = document.createElement("span");
+    const gamePlayer = playersById.get(member.clientId);
+    const roleText = member.data?.isHost ? "房主" : "玩家";
+    const scoreText = gamePlayer ? gamePlayer.score : 0;
+    const healthText = gamePlayer ? Math.max(0, Math.ceil(gamePlayer.health)) : 100;
+    meta.textContent = `${roleText} | Kills ${scoreText} | HP ${healthText}`;
+    left.append(name, meta);
+
+    const right = document.createElement("span");
+    right.textContent = gamePlayer ? (gamePlayer.alive ? "在線" : "重生中") : "已加入";
+
+    div.append(left, right);
+    playerList.appendChild(div);
+  });
+}
+
+async function ensureAbly() {
+  if (state.ably) {
+    return state.ably;
+  }
+
+  const authUrl = `/api/ably-auth?clientId=${encodeURIComponent(state.clientId)}`;
+  const realtime = new Ably.Realtime({
+    clientId: state.clientId,
+    authUrl,
+  });
+
+  state.ably = realtime;
+
+  if (realtime.connection.state === "connected") {
+    return realtime;
+  }
+
+  await new Promise((resolve, reject) => {
+    realtime.connection.once("connected", () => {
+      resolve();
+    });
+
+    realtime.connection.once("failed", (change) => {
+      reject(new Error(change.reason?.message || "Ably connection failed"));
+    });
+  });
+
+  return realtime;
+}
+
+async function leaveCurrentRoom(notify = true) {
+  if (!state.channel) {
+    state.roomCode = "";
+    state.roomJoined = false;
+    state.presenceMembers = [];
+    state.hostInputs = {};
+    state.renderGame = null;
+    state.hostGame = null;
+    state.matchState = "lobby";
+    updateHud();
+    return;
+  }
+
+  try {
+    if (notify) {
+      await state.channel.publish("system", {
+        type: "leave_notice",
+        playerId: state.clientId,
+        playerName: state.playerName,
+      });
+    }
+    await state.channel.presence.leave();
+    await state.channel.unsubscribe();
+    await state.channel.detach();
+  } catch (error) {
+    console.error(error);
+  }
+
+  state.channel = null;
+  state.roomCode = "";
+  state.roomJoined = false;
+  state.presenceMembers = [];
+  state.hostInputs = {};
+  state.renderGame = null;
+  state.hostGame = null;
+  state.matchState = "lobby";
+  updateHud();
+  showOverlay("Lobby", "建立房間後開始多人對戰", "Vercel 版使用 Ably Realtime 傳遞房間、輸入與對戰狀態。");
+}
+
+async function joinRoom(options) {
+  const roomCode = options.roomCode.toUpperCase();
+  state.playerName = getPlayerName();
+  state.isHost = Boolean(options.isHost);
+
+  try {
+    await ensureAbly();
+    await leaveCurrentRoom(false);
+
+    state.roomCode = roomCode;
+    state.channel = state.ably.channels.get(`${ROOM_PREFIX}${roomCode}`);
+
+    await state.channel.attach();
+    await state.channel.subscribe((message) => {
+      handleChannelMessage(message);
+    });
+    await state.channel.presence.subscribe(() => {
+      refreshPresence().catch((error) => console.error(error));
+    });
+
+    await state.channel.presence.enter({
+      name: state.playerName,
+      isHost: state.isHost,
+    });
+
+    state.roomJoined = true;
+    await refreshPresence();
+
+    if (state.presenceMembers.length > 2) {
+      setStatus("這個房間已滿，請使用其他房號。");
+      await leaveCurrentRoom(false);
+      return;
+    }
+
+    updateHud();
+    resetLobbyView();
+    setStatus(`已加入房間 ${roomCode}。`);
+  } catch (error) {
+    console.error(error);
+    setStatus("連線房間失敗，請確認 Vercel 環境變數與網路連線。");
   }
 }
 
-function burst(x, y, color) {
-  for (let index = 0; index < 10; index += 1) {
+async function refreshPresence() {
+  if (!state.channel) {
+    return;
+  }
+
+  const members = await state.channel.presence.get();
+  state.presenceMembers = members;
+  updateHud();
+  handlePresenceSideEffects();
+}
+
+function handlePresenceSideEffects() {
+  if (!state.roomJoined) {
+    return;
+  }
+
+  if (state.presenceMembers.length < 2 && state.matchState !== "running") {
+    resetLobbyView();
+    return;
+  }
+
+  if (state.matchState !== "running") {
+    if (state.presenceMembers.length >= 2) {
+      if (state.isHost) {
+        showOverlay("Ready", "兩位玩家已到齊", "按下「房主開始對戰」後就會開始 5 分鐘對戰。");
+      } else {
+        showOverlay("Ready", "等待房主開始", "房主開始後你就會立即進入戰場。");
+      }
+    }
+  }
+
+  if (state.matchState === "running" && state.presenceMembers.length < 2) {
+    state.matchState = "waiting";
+    if (state.isHost) {
+      if (state.hostGame) {
+        state.hostGame.running = false;
+        state.hostGame.resultTag = "Interrupted";
+        state.hostGame.resultText = "另一位玩家已離開房間，對戰已中止。";
+        publishSystemState("match_ended", {
+          resultTag: state.hostGame.resultTag,
+          resultText: state.hostGame.resultText,
+          state: serializeGame(state.hostGame),
+        });
+      }
+    }
+    showOverlay("Waiting", "另一位玩家已離開", "請等待朋友重新加入，或換一個房號重新開始。");
+    setStatus("房間人數不足，對戰已停止。");
+  }
+}
+
+function publishSystemState(type, payload) {
+  if (!state.channel) {
+    return;
+  }
+
+  state.channel.publish("system", { type, ...payload }).catch((error) => {
+    console.error(error);
+  });
+}
+
+function publishInput() {
+  if (!state.channel || !state.roomJoined || !state.playerName) {
+    return;
+  }
+
+  if (state.isHost) {
+    state.hostInputs[state.clientId] = { ...localInput };
+    return;
+  }
+
+  state.channel.publish("input", {
+    playerId: state.clientId,
+    input: { ...localInput },
+  }).catch((error) => {
+    console.error(error);
+  });
+}
+
+function handleChannelMessage(message) {
+  if (message.name === "input" && state.isHost && state.hostGame) {
+    state.hostInputs[message.data.playerId] = { ...createEmptyInput(), ...message.data.input };
+    return;
+  }
+
+  if (message.name === "state" && !state.isHost) {
+    state.renderGame = message.data.state;
+    state.matchState = message.data.matchState;
+    updateHud();
+
+    if (message.data.matchState === "running") {
+      hideOverlay();
+      setStatus(message.data.state.statusText);
+    }
+
+    if (message.data.matchState === "ended") {
+      showOverlay(message.data.state.resultTag, "對戰結束", message.data.state.resultText);
+      setStatus(message.data.state.resultText);
+    }
+
+    return;
+  }
+
+  if (message.name !== "system") {
+    return;
+  }
+
+  const payload = message.data;
+
+  if (payload.type === "presence_sync") {
+    refreshPresence().catch((error) => console.error(error));
+    return;
+  }
+
+  if (payload.type === "match_started") {
+    state.matchState = "running";
+    if (!state.isHost) {
+      state.renderGame = payload.state;
+    }
+    hideOverlay();
+    setStatus("對戰開始，5 分鐘倒數啟動。");
+    updateHud();
+    return;
+  }
+
+  if (payload.type === "match_ended") {
+    state.matchState = "ended";
+    state.renderGame = payload.state || state.renderGame;
+    updateHud();
+    showOverlay(payload.resultTag || "Result", "對戰結束", payload.resultText || "回合已結束。");
+    setStatus(payload.resultText || "回合已結束。");
+    return;
+  }
+
+  if (payload.type === "leave_notice") {
+    refreshPresence().catch((error) => console.error(error));
+  }
+}
+
+function spawnBullet(player) {
+  const angle = Math.atan2(pointerForPlayer(player).y - player.y, pointerForPlayer(player).x - player.x);
+  player.angle = angle;
+
+  return {
+    ownerId: player.id,
+    x: player.x + Math.cos(angle) * (player.radius + 10),
+    y: player.y + Math.sin(angle) * (player.radius + 10),
+    vx: Math.cos(angle) * player.bulletSpeed,
+    vy: Math.sin(angle) * player.bulletSpeed,
+    radius: 5,
+    life: 1.5,
+    color: player.color === "#3dd9b1" ? "#9cf4db" : "#ffd5d5",
+    damage: player.bulletDamage,
+  };
+}
+
+function pointerForPlayer(player) {
+  if (player.id === state.clientId) {
+    return { x: localInput.aimX, y: localInput.aimY };
+  }
+
+  return state.hostInputs[player.id] || createEmptyInput();
+}
+
+function tickHostGame(now, dt) {
+  if (!state.hostGame || !state.hostGame.running) {
+    return;
+  }
+
+  const game = state.hostGame;
+  game.timeLeft = Math.max(0, ROUND_DURATION_MS - (now - game.startedAt));
+
+  if (game.timeLeft <= 0) {
+    finishMatch();
+    return;
+  }
+
+  game.players.forEach((player) => {
+    const input = player.id === state.clientId ? localInput : (state.hostInputs[player.id] || createEmptyInput());
+
+    if (!player.alive) {
+      if (player.respawnAt > 0 && now >= player.respawnAt) {
+        player.x = player.color === "#3dd9b1" ? 140 : ARENA.width - 140;
+        player.y = 120 + Math.random() * (ARENA.height - 240);
+        player.health = 100;
+        player.alive = true;
+        player.respawnAt = 0;
+      }
+      return;
+    }
+
+    let moveX = 0;
+    let moveY = 0;
+    if (input.up) moveY -= 1;
+    if (input.down) moveY += 1;
+    if (input.left) moveX -= 1;
+    if (input.right) moveX += 1;
+
+    if (moveX !== 0 || moveY !== 0) {
+      const length = Math.hypot(moveX, moveY) || 1;
+      moveX /= length;
+      moveY /= length;
+    }
+
+    moveWithCollision(player, player.x + moveX * player.speed * dt, player.y + moveY * player.speed * dt);
+    player.angle = Math.atan2(input.aimY - player.y, input.aimX - player.x);
+
+    if (input.shooting && now - player.lastShotAt >= player.fireRate * 1000) {
+      player.lastShotAt = now;
+      game.bullets.push(spawnBullet(player));
+    }
+  });
+
+  game.bullets = game.bullets.filter((bullet) => {
+    bullet.x += bullet.vx * dt;
+    bullet.y += bullet.vy * dt;
+    bullet.life -= dt;
+
+    if (
+      bullet.life <= 0 ||
+      bullet.x < -20 ||
+      bullet.x > ARENA.width + 20 ||
+      bullet.y < -20 ||
+      bullet.y > ARENA.height + 20 ||
+      isInsideObstacle(bullet.x, bullet.y, bullet.radius)
+    ) {
+      return false;
+    }
+
+    const attacker = game.players.find((player) => player.id === bullet.ownerId);
+    const target = game.players.find((player) => player.id !== bullet.ownerId);
+
+    if (!attacker || !target || !target.alive) {
+      return true;
+    }
+
+    const distance = Math.hypot(bullet.x - target.x, bullet.y - target.y);
+    if (distance <= bullet.radius + target.radius) {
+      target.health -= bullet.damage;
+      emitParticles(target.x, target.y, target.color);
+
+      if (target.health <= 0) {
+        target.health = 0;
+        target.alive = false;
+        target.respawnAt = now + RESPAWN_DELAY_MS;
+        attacker.score += 1;
+        game.statusText = `${attacker.name} 擊倒了 ${target.name}`;
+      }
+
+      return false;
+    }
+
+    return true;
+  });
+
+  state.renderGame = serializeGame(game);
+}
+
+function finishMatch() {
+  if (!state.hostGame) {
+    return;
+  }
+
+  const [firstPlayer, secondPlayer] = state.hostGame.players;
+  let resultTag = "Draw";
+  let resultText = "時間到，雙方平手。";
+
+  if (firstPlayer.score > secondPlayer.score) {
+    resultTag = "Victory";
+    resultText = `${firstPlayer.name} 以 ${firstPlayer.score} 比 ${secondPlayer.score} 獲勝。`;
+  } else if (firstPlayer.score < secondPlayer.score) {
+    resultTag = "Victory";
+    resultText = `${secondPlayer.name} 以 ${secondPlayer.score} 比 ${firstPlayer.score} 獲勝。`;
+  }
+
+  state.hostGame.running = false;
+  state.hostGame.timeLeft = 0;
+  state.hostGame.resultTag = resultTag;
+  state.hostGame.resultText = resultText;
+  state.renderGame = serializeGame(state.hostGame);
+  state.matchState = "ended";
+  showOverlay(resultTag, "對戰結束", resultText);
+  setStatus(resultText);
+
+  publishSystemState("match_ended", {
+    resultTag,
+    resultText,
+    state: state.renderGame,
+  });
+}
+
+function emitParticles(x, y, color) {
+  for (let index = 0; index < 12; index += 1) {
     const angle = Math.random() * Math.PI * 2;
-    const speed = 30 + Math.random() * 140;
+    const speed = 40 + Math.random() * 140;
     state.particles.push({
       x,
       y,
@@ -198,7 +739,7 @@ function burst(x, y, color) {
       life: 0.3 + Math.random() * 0.4,
       maxLife: 0.7,
       color,
-      size: 2 + Math.random() * 3,
+      size: 2 + Math.random() * 4,
     });
   }
 }
@@ -235,11 +776,11 @@ function drawArena() {
 }
 
 function drawPlayers() {
-  if (!state.game) {
+  if (!state.renderGame) {
     return;
   }
 
-  state.game.players.forEach((player) => {
+  state.renderGame.players.forEach((player) => {
     if (!player.alive) {
       ctx.save();
       ctx.fillStyle = "rgba(255,255,255,0.22)";
@@ -275,11 +816,11 @@ function drawPlayers() {
 }
 
 function drawBullets() {
-  if (!state.game) {
+  if (!state.renderGame) {
     return;
   }
 
-  state.game.bullets.forEach((bullet) => {
+  state.renderGame.bullets.forEach((bullet) => {
     ctx.save();
     ctx.fillStyle = bullet.color;
     ctx.beginPath();
@@ -302,11 +843,11 @@ function drawParticles() {
 }
 
 function drawCrosshair() {
-  if (!state.game || state.room?.matchState !== "running") {
+  if (state.matchState !== "running") {
     return;
   }
 
-  const me = state.game.players.find((player) => player.id === state.clientId);
+  const me = state.renderGame?.players.find((player) => player.id === state.clientId);
   if (!me || !me.alive) {
     return;
   }
@@ -315,15 +856,15 @@ function drawCrosshair() {
   ctx.strokeStyle = "rgba(255,255,255,0.65)";
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(inputState.aimX, inputState.aimY, 12, 0, Math.PI * 2);
-  ctx.moveTo(inputState.aimX - 18, inputState.aimY);
-  ctx.lineTo(inputState.aimX - 6, inputState.aimY);
-  ctx.moveTo(inputState.aimX + 6, inputState.aimY);
-  ctx.lineTo(inputState.aimX + 18, inputState.aimY);
-  ctx.moveTo(inputState.aimX, inputState.aimY - 18);
-  ctx.lineTo(inputState.aimX, inputState.aimY - 6);
-  ctx.moveTo(inputState.aimX, inputState.aimY + 6);
-  ctx.lineTo(inputState.aimX, inputState.aimY + 18);
+  ctx.arc(localInput.aimX, localInput.aimY, 12, 0, Math.PI * 2);
+  ctx.moveTo(localInput.aimX - 18, localInput.aimY);
+  ctx.lineTo(localInput.aimX - 6, localInput.aimY);
+  ctx.moveTo(localInput.aimX + 6, localInput.aimY);
+  ctx.lineTo(localInput.aimX + 18, localInput.aimY);
+  ctx.moveTo(localInput.aimX, localInput.aimY - 18);
+  ctx.lineTo(localInput.aimX, localInput.aimY - 6);
+  ctx.moveTo(localInput.aimX, localInput.aimY + 6);
+  ctx.lineTo(localInput.aimX, localInput.aimY + 18);
   ctx.stroke();
   ctx.restore();
 }
@@ -346,136 +887,118 @@ function render() {
   drawCrosshair();
 }
 
-let lastFrame = performance.now();
-function frame(now) {
-  const dt = Math.min((now - lastFrame) / 1000, 0.032);
-  lastFrame = now;
+function gameLoop(now) {
+  const dt = Math.min((now - state.lastFrameAt) / 1000, 0.032);
+  state.lastFrameAt = now;
+
   updateParticles(dt);
+
+  if (state.isHost && state.matchState === "running" && state.hostGame?.running) {
+    tickHostGame(now, dt);
+    updateHud();
+
+    if (state.channel && now - state.lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
+      state.lastSnapshotAt = now;
+      state.channel.publish("state", {
+        matchState: state.hostGame.running ? "running" : "ended",
+        state: serializeGame(state.hostGame),
+      }).catch((error) => console.error(error));
+    }
+  }
+
   render();
-  requestAnimationFrame(frame);
+  requestAnimationFrame(gameLoop);
 }
 
-function sendInput() {
-  send("input", {
-    up: inputState.up,
-    down: inputState.down,
-    left: inputState.left,
-    right: inputState.right,
-    shooting: inputState.shooting,
-    aimX: inputState.aimX,
-    aimY: inputState.aimY,
+async function startMatch() {
+  if (!state.isHost) {
+    setStatus("只有房主能開始對戰。");
+    return;
+  }
+
+  if (state.presenceMembers.length !== 2) {
+    setStatus("需要兩位玩家都在房間內才能開始。");
+    return;
+  }
+
+  initializeMatch(Date.now());
+  updateHud();
+  hideOverlay();
+
+  publishSystemState("match_started", {
+    state: serializeGame(state.hostGame),
   });
 }
 
-function setMovement(code, pressed) {
-  if (code === "KeyW") inputState.up = pressed;
-  if (code === "KeyS") inputState.down = pressed;
-  if (code === "KeyA") inputState.left = pressed;
-  if (code === "KeyD") inputState.right = pressed;
-}
-
-socket.addEventListener("open", () => {
-  state.connected = true;
-  setStatus("已連上伺服器，現在可以建立房間或加入房間。");
-});
-
-socket.addEventListener("close", () => {
-  state.connected = false;
-  showOverlay("Offline", "連線中斷", "伺服器連線已斷開，請重新整理頁面。");
-  setStatus("伺服器連線已斷開。");
-});
-
-socket.addEventListener("message", (event) => {
-  const message = JSON.parse(event.data);
-
-  if (message.type === "welcome") {
-    state.clientId = message.payload.clientId;
-    return;
-  }
-
-  if (message.type === "room_state") {
-    handleRoomState(message.payload);
-    return;
-  }
-
-  if (message.type === "game_state") {
-    handleGameState(message.payload);
-    return;
-  }
-
-  if (message.type === "left_room") {
-    state.room = null;
-    state.roomCode = "";
-    state.game = null;
-    renderRoomInfo();
-    updateHud();
-    showOverlay("Lobby", "建立房間後開始多人對戰", "房主建立房間後分享房號，另一位玩家加入後就能開始對戰。");
-    setStatus("已離開房間。");
-    return;
-  }
-
-  if (message.type === "error" || message.type === "info") {
-    setStatus(message.payload.message);
-  }
-});
-
 createRoomButton.addEventListener("click", () => {
-  send("create_room", { name: getPlayerName() });
+  joinRoom({ roomCode: generateRoomCode(), isHost: true });
 });
 
 joinRoomButton.addEventListener("click", () => {
-  send("join_room", {
-    roomCode: roomCodeInput.value.trim().toUpperCase(),
-    name: getPlayerName(),
-  });
+  const roomCode = roomCodeInput.value.trim().toUpperCase();
+  if (!roomCode) {
+    setStatus("請先輸入房號。");
+    return;
+  }
+
+  joinRoom({ roomCode, isHost: false });
 });
 
 leaveRoomButton.addEventListener("click", () => {
-  send("leave_room");
+  leaveCurrentRoom(true).catch((error) => console.error(error));
+  setStatus("已離開房間。");
 });
 
 startMatchButton.addEventListener("click", () => {
-  send("start_match");
+  startMatch().catch((error) => console.error(error));
 });
 
 canvas.addEventListener("mousemove", (event) => {
   const rect = canvas.getBoundingClientRect();
-  inputState.aimX = ((event.clientX - rect.left) / rect.width) * ARENA.width;
-  inputState.aimY = ((event.clientY - rect.top) / rect.height) * ARENA.height;
-  sendInput();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * ARENA.width;
+  pointer.y = ((event.clientY - rect.top) / rect.height) * ARENA.height;
+  localInput.aimX = pointer.x;
+  localInput.aimY = pointer.y;
+  publishInput();
 });
 
 canvas.addEventListener("mousedown", (event) => {
   if (event.button !== 0) {
     return;
   }
-  inputState.shooting = true;
-  sendInput();
+  localInput.shooting = true;
+  publishInput();
 });
 
 window.addEventListener("mouseup", () => {
-  inputState.shooting = false;
-  sendInput();
+  localInput.shooting = false;
+  publishInput();
 });
 
 window.addEventListener("keydown", (event) => {
-  setMovement(event.code, true);
+  if (event.code === "KeyW") localInput.up = true;
+  if (event.code === "KeyS") localInput.down = true;
+  if (event.code === "KeyA") localInput.left = true;
+  if (event.code === "KeyD") localInput.right = true;
   if (event.code === "Space") {
     event.preventDefault();
-    inputState.shooting = true;
+    localInput.shooting = true;
   }
-  sendInput();
+  publishInput();
 });
 
 window.addEventListener("keyup", (event) => {
-  setMovement(event.code, false);
+  if (event.code === "KeyW") localInput.up = false;
+  if (event.code === "KeyS") localInput.down = false;
+  if (event.code === "KeyA") localInput.left = false;
+  if (event.code === "KeyD") localInput.right = false;
   if (event.code === "Space") {
-    inputState.shooting = false;
+    localInput.shooting = false;
   }
-  sendInput();
+  publishInput();
 });
 
-showOverlay("Lobby", "建立房間後開始多人對戰", "房主建立房間後分享房號，另一位玩家加入後就能開始對戰。");
+showOverlay("Lobby", "建立房間後開始多人對戰", "Vercel 版使用 Ably Realtime 傳遞房間、輸入與對戰狀態。");
+setStatus("請先輸入玩家名稱，然後建立房間或輸入房號加入。");
 updateHud();
-renderRoomInfo();
-requestAnimationFrame(frame);
+requestAnimationFrame(gameLoop);
