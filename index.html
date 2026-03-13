@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arena Duel</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="game-shell">
+    <section class="hero-panel">
+      <p class="eyebrow">Single Player Shooter</p>
+      <h1>ARENA DUEL</h1>
+      <p class="subtitle">
+        在 5 分鐘內擊倒電腦對手最多次就獲勝。使用 <strong>WASD</strong> 移動，
+        滑鼠瞄準，按一下左鍵或 <strong>Space</strong> 開火。
+      </p>
+    </section>
+
+    <section class="hud">
+      <div class="hud-card">
+        <span class="label">剩餘時間</span>
+        <strong id="timer">05:00</strong>
+      </div>
+      <div class="hud-card score player">
+        <span class="label">玩家擊殺</span>
+        <strong id="playerScore">0</strong>
+      </div>
+      <div class="hud-card score enemy">
+        <span class="label">敵人擊殺</span>
+        <strong id="enemyScore">0</strong>
+      </div>
+      <div class="hud-card health">
+        <span class="label">玩家血量</span>
+        <strong id="playerHealth">100</strong>
+      </div>
+      <div class="hud-card health">
+        <span class="label">敵人血量</span>
+        <strong id="enemyHealth">100</strong>
+      </div>
+    </section>
+
+    <section class="arena-wrap">
+      <canvas id="gameCanvas" width="960" height="540" aria-label="槍戰遊戲畫面"></canvas>
+
+      <div class="overlay visible" id="overlay">
+        <div class="overlay-card">
+          <p class="overlay-kicker" id="overlayKicker">準備開戰</p>
+          <h2 id="overlayTitle">5 分鐘內擊殺最多者獲勝</h2>
+          <p id="overlayText">
+            你會在競技場中和 AI 對手對戰，雙方被擊倒後都會重生，直到倒數結束。
+          </p>
+          <div class="button-row">
+            <button id="startButton" type="button">開始遊戲</button>
+            <button id="restartButton" type="button" class="secondary">重新開始</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="status-bar">
+      <p id="statusText">按下開始遊戲後進入競技場。</p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+:root {
+  --bg: #0f1720;
+  --bg-accent: #172737;
+  --panel: rgba(9, 18, 28, 0.8);
+  --panel-border: rgba(148, 163, 184, 0.18);
+  --text: #ecf3ff;
+  --muted: #98a9bf;
+  --player: #3dd9b1;
+  --enemy: #ff6b6b;
+  --accent: #ffd166;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top, rgba(61, 217, 177, 0.14), transparent 28%),
+    radial-gradient(circle at 85% 20%, rgba(255, 107, 107, 0.18), transparent 24%),
+    linear-gradient(160deg, #08111b 0%, #101d2b 55%, #071018 100%);
+}
+
+.game-shell {
+  width: min(1200px, calc(100% - 32px));
+  margin: 24px auto 32px;
+}
+
+.hero-panel {
+  margin-bottom: 18px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.hero-panel h1 {
+  margin: 0;
+  font-size: clamp(2.4rem, 5vw, 4.6rem);
+  line-height: 0.96;
+}
+
+.subtitle {
+  max-width: 760px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.hud {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.hud-card {
+  padding: 14px 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+
+.hud-card .label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.hud-card strong {
+  font-size: clamp(1.3rem, 3vw, 2rem);
+}
+
+.hud-card.player strong,
+.hud-card.player .label {
+  color: var(--player);
+}
+
+.hud-card.enemy strong,
+.hud-card.enemy .label {
+  color: var(--enemy);
+}
+
+.arena-wrap {
+  position: relative;
+  border-radius: 28px;
+  padding: 14px;
+  border: 1px solid var(--panel-border);
+  background: linear-gradient(180deg, rgba(12, 22, 34, 0.9), rgba(8, 16, 24, 0.95));
+  box-shadow: var(--shadow);
+}
+
+#gameCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 18px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at center, #203246 0%, #132334 56%, #0a1621 100%);
+  background-size: 48px 48px, 48px 48px, cover;
+  cursor: crosshair;
+}
+
+.overlay {
+  position: absolute;
+  inset: 14px;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border-radius: 18px;
+  background: rgba(6, 12, 18, 0.68);
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+.overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.overlay-card {
+  width: min(520px, 100%);
+  padding: 28px;
+  border-radius: 22px;
+  background: rgba(12, 21, 31, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+
+.overlay-kicker {
+  margin: 0 0 10px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-size: 0.82rem;
+}
+
+.overlay-card h2 {
+  margin: 0;
+  font-size: clamp(1.6rem, 4vw, 2.5rem);
+}
+
+.overlay-card p {
+  margin: 14px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.button-row {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 22px;
+  flex-wrap: wrap;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 20px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #09131d;
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(255, 209, 102, 0.24);
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.status-bar {
+  margin-top: 14px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  color: var(--muted);
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+}
+
+.status-bar p {
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .hud {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .game-shell {
+    width: min(100% - 20px, 100%);
+    margin: 12px auto 20px;
+  }
+
+  .hero-panel h1 {
+    font-size: 2.5rem;
+  }
+
+  .hud {
+    grid-template-columns: 1fr;
+  }
+
+  .overlay-card {
+    padding: 22px 18px;
+  }
+}
