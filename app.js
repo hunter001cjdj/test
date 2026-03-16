@@ -146,7 +146,7 @@ function moveWithCollision(player, nextX, nextY) {
 function createPlayerEntity(meta, slotIndex) {
   return {
     id: meta.clientId,
-    name: meta.name,
+    name: meta.data?.name || meta.clientId,
     isHost: Boolean(meta.data?.isHost),
     x: slotIndex === 0 ? 140 : ARENA.width - 140,
     y: ARENA.height / 2,
@@ -576,7 +576,8 @@ function handleChannelMessage(message) {
 }
 
 function spawnBullet(player) {
-  const angle = Math.atan2(pointerForPlayer(player).y - player.y, pointerForPlayer(player).x - player.x);
+  const aim = pointerForPlayer(player);
+  const angle = Math.atan2(aim.y - player.y, aim.x - player.x);
   player.angle = angle;
 
   return {
@@ -597,7 +598,11 @@ function pointerForPlayer(player) {
     return { x: localInput.aimX, y: localInput.aimY };
   }
 
-  return state.hostInputs[player.id] || createEmptyInput();
+  const input = state.hostInputs[player.id] || createEmptyInput();
+  return {
+    x: input.aimX,
+    y: input.aimY,
+  };
 }
 
 function tickHostGame(now, dt) {
