@@ -895,15 +895,16 @@ function render() {
 function gameLoop(now) {
   const dt = Math.min((now - state.lastFrameAt) / 1000, 0.032);
   state.lastFrameAt = now;
+  const wallNow = Date.now();
 
   updateParticles(dt);
 
   if (state.isHost && state.matchState === "running" && state.hostGame?.running) {
-    tickHostGame(now, dt);
+    tickHostGame(wallNow, dt);
     updateHud();
 
-    if (state.channel && now - state.lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
-      state.lastSnapshotAt = now;
+    if (state.channel && wallNow - state.lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
+      state.lastSnapshotAt = wallNow;
       state.channel.publish("state", {
         matchState: state.hostGame.running ? "running" : "ended",
         state: serializeGame(state.hostGame),
