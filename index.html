@@ -1,0 +1,102 @@
+﻿<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arena Duel Online</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">Online Room Battle</p>
+      <h1>ARENA DUEL ONLINE</h1>
+      <p class="subtitle">
+        建立房間或加入房間後，和朋友在同一張地圖裡對戰。這個版本改成可部署在 Vercel 的即時連線架構，5 分鐘內擊殺數最高的玩家獲勝。
+      </p>
+    </section>
+
+    <section class="lobby-grid">
+      <article class="panel">
+        <h2>連線大廳</h2>
+        <label class="field">
+          <span>玩家名稱</span>
+          <input id="playerName" type="text" maxlength="18" placeholder="例如 Hunter">
+        </label>
+        <div class="button-group">
+          <button id="soloMatchButton" type="button">單機遊玩</button>
+          <button id="createRoomButton" type="button">建立房間</button>
+        </div>
+        <div class="divider"><span>或</span></div>
+        <label class="field">
+          <span>輸入房號</span>
+          <input id="roomCodeInput" type="text" maxlength="6" placeholder="例如 AB12CD">
+        </label>
+        <div class="button-group">
+          <button id="joinRoomButton" type="button" class="secondary">加入房間</button>
+        </div>
+        <p class="hint">可先用單機模式體驗玩法，或建立房間邀請朋友加入。每個房間最多 2 位玩家。</p>
+      </article>
+
+      <article class="panel">
+        <h2>房間資訊</h2>
+        <div class="room-meta">
+          <div>
+            <span class="meta-label">目前房號</span>
+            <strong id="roomCodeText">未加入</strong>
+          </div>
+          <div>
+            <span class="meta-label">你的身份</span>
+            <strong id="playerRoleText">未連線</strong>
+          </div>
+        </div>
+        <div class="player-list" id="playerList"></div>
+        <div class="button-group">
+          <button id="startMatchButton" type="button" disabled>房主開始對戰</button>
+          <button id="leaveRoomButton" type="button" class="secondary" disabled>離開房間</button>
+        </div>
+        <p class="hint">操作方式: `WASD` 移動、滑鼠瞄準、左鍵或 `Space` 射擊。</p>
+      </article>
+    </section>
+
+    <section class="hud">
+      <div class="hud-card">
+        <span>剩餘時間</span>
+        <strong id="timer">05:00</strong>
+      </div>
+      <div class="hud-card">
+        <span>你的擊殺</span>
+        <strong id="localScore">0</strong>
+      </div>
+      <div class="hud-card">
+        <span>你的血量</span>
+        <strong id="localHealth">100</strong>
+      </div>
+      <div class="hud-card">
+        <span>房間狀態</span>
+        <strong id="matchState">等待玩家</strong>
+      </div>
+    </section>
+
+    <section class="arena-panel">
+      <canvas id="gameCanvas" width="960" height="540"></canvas>
+      <div class="overlay visible" id="overlay">
+        <div class="overlay-card">
+          <p class="overlay-tag" id="overlayTag">Lobby</p>
+          <h2 id="overlayTitle">建立房間後開始多人對戰</h2>
+          <p id="overlayText">
+            房主建立房間後分享房號，另一位玩家加入後就能開始對戰。Vercel 版使用 Ably Realtime 進行同步。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="status-panel">
+      <p id="statusText">尚未連線。請先建立房間或加入房間。</p>
+    </section>
+  </main>
+
+  <script src="https://cdn.ably.com/lib/ably.min-2.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

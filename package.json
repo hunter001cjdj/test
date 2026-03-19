@@ -1,0 +1,15 @@
+﻿{
+  "name": "arena-duel-online-vercel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vercel-compatible multiplayer browser shooter using Ably Realtime.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "ably": "^2.8.0"
+  }
+}
